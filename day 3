@@ -1,0 +1,230 @@
+# Design Patterns & Jakarta EE Notes (Day 2 & 3)
+
+## 1. Design Patterns: Creational
+
+### Simple Factory vs. Factory Method
+
+#### The Problem with Simple Factory
+Imagine you are building a UI framework. You have different users with different style preferences:
+- **Windows Users**: Expect Windows-style buttons and menus.
+- **Linux Users**: Expect Linux-style components.
+- **macOS Users**: Expect macOS-style styling.
+
+If you use a single "Factory" class with many `if-else` statements to create these components, your code becomes **tightly coupled** and messy. 
+*   **Issue**: If you want to add a new style (e.g., "Web Style"), you must modify the existing working code.
+*   **Violation**: This violates the **Open/Closed Principle** (Open for extension, Closed for modification).
+
+#### The Solution: Factory Method Pattern
+Instead of one central factory deciding everything, we define a **specification** (Contract/Interface) for creating components and let subclasses decide which specific class to instantiate.
+
+> **Core Idea**: Define an interface for creating an object, but let subclasses decide which class to instantiate. The factory method lets a class defer instantiation to subclasses.
+
+**Structure:**
+1.  **`UIComponentCreator`** (Abstract Class / Interface): Defines the contract (e.g., `createButton()`).
+2.  **Concrete Creators**:
+    - `WindowsUIComponentCreator`: Extends `UIComponentCreator` $\rightarrow$ returns Windows components.
+    - `MotifUIComponentCreator` (Linux): Extends `UIComponentCreator` $\rightarrow$ returns Linux components.
+
+**Benefit**: The design is **Closed for Modification** (parent class doesn't change) but **Open for Extension** (you can just add `MacUIComponentCreator`).
+
+---
+
+## 2. Jakarta EE Day 2: Advanced Concepts
+
+### Database Connection Pooling
+
+#### Why do we need it?
+Connecting to a database manually involves:
+1.  Loading the driver.
+2.  Opening a physical connection (TCP/IP handshake, authentication) $\rightarrow$ **Expensive & Slow!**
+3.  Executing the query.
+4.  Closing the connection.
+
+Doing this for *every single user request* consumes high CPU, Memory, and Bandwidth. It makes the application slow.
+
+#### What is a Connection Pool?
+A **Connection Pool** is a cache (or pool) of database connections maintained so that connections can be reused for future requests.
+
+> **Analogy**: **The Taxi Stand**
+> *   **Pool**: The Taxi Stand with taxis (connections) waiting.
+> *   **Request**: Passenger arrives and takes a taxi.
+> *   **Use**: The ride (query execution) happens.
+> *   **Close**: Passenger gets off, and the taxi **returns to the stand** (Pool) to wait for the next person. It is **not** destroyed.
+
+**How it works:**
+- **Idle**: Pre-created connections waiting in the pool.
+- **Active**: Connection currently being used by a request.
+- **Leak**: If you forget to return (close) a connection, it stays "active" forever. Eventually, the pool runs out of connections (Taxis), and the app hangs. **Always close your resources!**
+
+#### Code Comparison
+
+| Feature | Without Pool (`DriverManager`) | With Pool (`DataSource`) |
+| :--- | :--- | :--- |
+| **Method** | `DriverManager.getConnection()` | `ds.getConnection()` |
+| **Mechanism** | Creates a **NEW** physical connection every time. | Picks an **EXISTING** idle connection from the pool. |
+| **Closing** | `con.close()` **destroys** the connection. | `con.close()` **returns** the connection to the pool. |
+| **Coupling** | Tightly coupled (Hardcoded URL/User/Pass). | Loosely coupled (Configured in Server). |
+| **Performance** | Slow (High overhead). | Fast (Reused resources). |
+
+#### Dependency Injection (DI) with DataSource
+We don't create the `DataSource` manually using `new`. The server creates it, and we ask for it using annotations.
+
+```java
+// Lookup string usually starts with java:comp/env/ followed by your resource name
+@Resource(lookup="java:comp/env/jdbc/mypool")
+private DataSource ds;
+```
+*Note: Use `javax.sql.DataSource` or `jakarta.sql.DataSource` interface.*
+
+---
+
+### JNDI (Java Naming and Directory Interface)
+
+#### What is a Naming Service?
+It binds a **Name** to an **Object** (like a Map `Key -> Value`).
+- **DNS**: Maps `google.com` (Name) $\rightarrow$ `142.250.x.x` (IP Address).
+- **File System**: Maps `C:\Users\file.txt` (Name) $\rightarrow$ Actual data on disk.
+- **LDAP**: Stores user/org info in a hierarchy.
+
+#### What is JNDI?
+JNDI is a generic API that allows Java applications to interact with *any* naming service (LDAP, DNS, RMI Registry, etc.) in a standard way.
+
+**Flow**: `User` $\rightarrow$ `JNDI API` $\rightarrow$ `Naming Service Implementation`
+
+**Key Interfaces:**
+- **Context**: The main interface.
+    - `bind(String name, Object obj)`: Attach name to object (Server's job).
+    - `lookup(String name)`: Find object by name (Client's job).
+- **InitialContext**: The starting point/implementation to look things up.
+
+#### `java:comp/env`
+This is a standard JNDI namespace in Jakarta EE servers for component-local environment entries.
+1.  **Config**: You define a resource in `context.xml` with a name (e.g., `jdbc/mypool`).
+2.  **Bind**: Server binds the real `DataSource` object to `java:comp/env/jdbc/mypool`.
+3.  **Lookup**: Your app asks for it by name.
+
+---
+
+### Practical Steps: Setting up Connection Pool (Tomcat)
+
+1.  **Clean Up**: If you have an existing server configuration that is messy, it's often better to delete the server instance in Eclipse/IDE and recreate it to ensure clean config files.
+2.  **Define Resource (`context.xml`)**:
+    Located in `META-INF/context.xml` (app specific) or `conf/context.xml` (global).
+    ```xml
+    <Resource name="jdbc/mypool"
+              auth="Container"
+              type="javax.sql.DataSource"
+              maxTotal="100"
+              maxIdle="30"
+              maxWaitMillis="10000"
+              username="root"
+              password="password"
+              driverClassName="com.mysql.cj.jdbc.Driver"
+              url="jdbc:mysql://localhost:3306/mydb"/>
+    ```
+3.  **Use in Servlet**:
+    ```java
+    @Resource(lookup = "java:/comp/env/jdbc/mypool")
+    private DataSource ds;
+
+    protected void doGet(...) {
+        // "Try-with-resources" ensures connection is closed (returned to pool) automatically
+        try (Connection con = ds.getConnection()) {
+            // Use connection
+        } catch (SQLException e) { 
+            e.printStackTrace(); 
+        }
+    }
+    ```
+
+---
+
+## 3. Jakarta EE Day 3: Parameters & Request Dispatching
+
+### Types of Parameters
+Parameters are ways to pass information to your Servlets.
+
+#### 1. Request Parameters (`request.getParameter`)
+- **Scope**: Single Request.
+- **Source**: HTML Forms, URL query strings (`?id=5`), Links.
+- **Access**: `request.getParameter("name")`
+- **Example**: User entering username in a form or selecting a module.
+
+#### 2. Initialization Parameters (`<init-param>`)
+- **Scope**: **Single Servlet** (Private to that servlet).
+- **Source**: Defined in `web.xml` inside a specific `<servlet>` tag.
+- **Access**: `getServletConfig().getInitParameter("name")`
+- **Use Case**: File path for a specific servlet's logs, specific settings for one module.
+
+#### 3. Context Parameters (`<context-param>`)
+- **Scope**: **Entire Web Application** (Global/Public).
+- **Source**: Defined in `web.xml` at the root level.
+- **Access**: `getServletContext().getInitParameter("name")`
+- **Use Case**: Database URL, Admin Email, Company Name (shared by `BookServ`, `EmployeeServ`, etc.).
+
+### ServletConfig vs ServletContext
+
+| Feature | ServletConfig | ServletContext |
+| :--- | :--- | :--- |
+| **Count** | One per **Servlet**. | One per **Web App**. |
+| **Analogy** | **Personal Cubicle** (Only you see it). | **Office Notice Board** (Everyone sees it). |
+| **Created** | During Servlet Initialization (`init()`). | At App Start / Deployment. |
+| **Access** | `getServletConfig()` | `getServletContext()` |
+| **Usage** | Reading `<init-param>`. | Reading `<context-param>`, Global resources. |
+
+---
+
+### Redirect vs. Forward
+
+When a servlet (=Web Component) cannot fully process a request, it hands it over to another.
+
+#### 1. Forward (`RequestDispatcher.forward()`)
+- **Concept**: Internal hand-off.
+- **Location**: Occurs **Server-side**.
+- **Request Object**: The **SAME** request object is passed. Data is preserved.
+- **URL Bar**: Does **NOT** change (Client doesn't know).
+- **Speed**: Faster (One network request).
+- **Code**:
+  ```java
+  // Forward to a servlet within the same context
+  RequestDispatcher rd = request.getRequestDispatcher("NextServlet");
+  rd.forward(request, response);
+  ```
+
+#### 2. Redirect (`response.sendRedirect()`)
+- **Concept**: "Go somewhere else".
+- **Location**: Occurs **Client-side** (Browser).
+- **Request Object**: A **NEW** request is created. Old request attributes are lost.
+- **URL Bar**: **Updates** to the new URL.
+- **Speed**: Slower (Two network round-trips: A$\rightarrow$Server, Server$\rightarrow$A, A$\rightarrow$B).
+- **Code**:
+  ```java
+  response.sendRedirect("NextServlet"); 
+  // OR external URL
+  response.sendRedirect("http://google.com");
+  ```
+
+#### Summary Comparison
+| Feature | Forward | Redirect |
+| :--- | :--- | :--- |
+| **Processing** | Server-side | Client-side (Browser) |
+| **Traffic** | 1 Request / 1 Response | 2 Requests / 2 Responses |
+| **Data** | Shares `request` / `response` objects | Data lost (unless passed in URL/Session) |
+| **URL** | Unchanged | Changed to new URL |
+| **Scope** | Same Web App (mostly) | Any URL (Internal or External) |
+
+---
+
+### Include Mechanism (`RequestDispatcher.include()`)
+Sometimes you don't want to leave the current servlet completely, but just want to *include* the output of another resource (like a header, footer, or dynamic sidebar) into the current response.
+
+- **Method**: `rd.include(request, response);`
+- **Behavior**: The control goes to the target resource, it generates its output, and then **control returns** to the original servlet to finish the page.
+- **Analogy**: "Copy-pasting" the output of another servlet into this one.
+
+```java
+// Example: Including a Banner
+RequestDispatcher rd = request.getRequestDispatcher("BannerServlet");
+rd.include(request, response); // Banner is added
+out.println("<h1>Main Page Content</h1>"); 
+```
